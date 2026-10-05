@@ -5,7 +5,7 @@ import pytest
 from bot.strategy.rebalance import plan_trades
 from bot.strategy.risk import DrawdownController, RiskState
 from bot.strategy.signals import realized_vol, trend_signal
-from bot.strategy.sizing import target_weights
+from bot.strategy.sizing import target_weights_legacy
 
 
 def _close(series_by_coin):
@@ -40,10 +40,10 @@ def test_realized_vol_scale():
     assert abs(v["X"].iloc[-1] - 0.01 * np.sqrt(2190)) < 0.1
 
 
-def test_target_weights_caps():
+def test_legacy_target_weights_caps():
     sig = {"A": 1, "B": -1, "C": 0, "D": 1}
     vol = {"A": 0.10, "B": 0.50, "C": 0.3, "D": 2.0}
-    w = target_weights(sig, vol, target_vol=0.25, max_weight=0.25, max_gross=0.95)
+    w = target_weights_legacy(sig, vol, target_vol=0.25, max_weight=0.25, max_gross=0.95)
     assert w["A"] == 0.25                     # 0.0625/0.10 = 0.625 -> capped
     assert w["B"] == pytest.approx(-0.125)    # 0.0625/0.5
     assert w["C"] == 0.0
@@ -51,10 +51,10 @@ def test_target_weights_caps():
     assert sum(abs(x) for x in w.values()) <= 0.95 + 1e-12
 
 
-def test_target_weights_gross_cap_and_size_mult():
+def test_legacy_target_weights_gross_cap_and_size_mult():
     sig = {c: 1 for c in "ABCDEFGH"}
     vol = {c: 0.05 for c in "ABCDEFGH"}      # each raw weight 0.625 -> capped 0.25 -> gross 2.0
-    w = target_weights(sig, vol, 0.25, 0.25, 0.95, size_mult=0.5)
+    w = target_weights_legacy(sig, vol, 0.25, 0.25, 0.95, size_mult=0.5)
     assert sum(w.values()) == pytest.approx(0.95 * 0.5)
     assert all(x == pytest.approx(0.95 / 8 * 0.5) for x in w.values())
 

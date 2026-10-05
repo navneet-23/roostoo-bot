@@ -24,8 +24,8 @@ from bot.execution.state import BotState
 from bot.logging_setup import CYCLE_FIELDS, HEARTBEAT_FIELDS, ORDER_FIELDS, CsvLogger, setup_logging
 from bot.strategy.rebalance import plan_trades
 from bot.strategy.risk import DrawdownController
-from bot.strategy.signals import realized_vol, trend_signal
-from bot.strategy.sizing import target_weights
+from bot.strategy.signals import cov_matrix, log_returns, realized_vol, trend_signal
+from bot.strategy.sizing import ex_ante_vol, target_weights
 
 log = logging.getLogger("bot")
 
@@ -117,10 +117,12 @@ class Bot:
             vol = realized_vol(panel, S.VOL_LOOKBACK, S.BARS_PER_YEAR).iloc[-1]
             signals = {p: int(sig[p]) for p in S.UNIVERSE}
             vols = {p: float(vol[p]) for p in S.UNIVERSE}
-            target = target_weights(signals, vols, S.TARGET_VOL, S.MAX_WEIGHT, S.MAX_GROSS, r["size_mult"])
+            cov = cov_matrix(log_returns(panel[list(S.UNIVERSE)]).values[-S.VOL_LOOKBACK:], S.BARS_PER_YEAR)
+            target = target_weights(signals, vols, cov, S.TARGET_VOL, S.MAX_WEIGHT, S.MAX_GROSS, r["size_mult"])
             trades = plan_trades(target, snap.weights, S.NO_TRADE_BAND)
+            note = f"ex-ante vol {ex_ante_vol(target, cov):.3f}"
             if panel.index[-1] != bar_open:
-                note = f"latest bar in panel is {panel.index[-1]} (expected {bar_open})"
+                note += f"; latest bar in panel is {panel.index[-1]} (expected {bar_open})"
         reasons = {p: f"sig={signals.get(p, 0)} vol={vols.get(p, float('nan')):.2f} w {snap.weights.get(p, 0):.3f}->{target.get(p, 0):.3f} {r['reason']}"
                    for p in S.UNIVERSE}
         executor = Executor(self.client, self.pair_meta, self.live, self.orders_csv, S.FEE_TAKER)

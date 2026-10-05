@@ -19,8 +19,8 @@ import pandas as pd
 
 from bot.strategy.rebalance import plan_trades
 from bot.strategy.risk import DrawdownController, RiskState
-from bot.strategy.signals import realized_vol, trend_signal
-from bot.strategy.sizing import target_weights
+from bot.strategy.signals import cov_matrix, log_returns, realized_vol, trend_signal
+from bot.strategy.sizing import ex_ante_vol, target_weights, target_weights_legacy
 
 
 @dataclass
@@ -61,7 +61,10 @@ class Book:
 class Simulator:
     def __init__(self, fee, slippage, ema_n, ret_lookback, vol_lookback, bars_per_year,
                  target_vol, max_weight, max_gross, band, dd_stop, cooldown_sec, reduced_size,
-                 capital=100_000.0):
+                 capital=100_000.0, sizing="cov"):
+        """sizing: "cov" = portfolio vol targeting (current); "legacy" = per-coin formula used
+        until 2026-10-06, kept for the before/after comparison in RESULTS.md."""
+        self.sizing = sizing
         self.fee, self.slip = fee, slippage
         self.ema_n, self.ret_lb, self.vol_lb, self.bpy = ema_n, ret_lookback, vol_lookback, bars_per_year
         self.target_vol, self.max_w, self.max_gross, self.band = target_vol, max_weight, max_gross, band
@@ -167,6 +170,7 @@ class Simulator:
         coins = list(cls.columns)
         sig = trend_signal(cls, self.ema_n, self.ret_lb)
         vol = realized_vol(cls, self.vol_lb, self.bpy)
+        LR = log_returns(cls).values
         idx = cls.index
         t0 = int(np.searchsorted(idx.values, np.datetime64(start.tz_convert("UTC").tz_localize(None))))
         book = Book(cash=self.capital)
@@ -189,20 +193,28 @@ class Simulator:
             equity = book.equity(price)
             r = risk.update(equity, int(ts[t] // 1000) + 4 * 3600)
             cur_w = book.weights(price, equity)
+            exante = 0.0
             if r["flat"]:
                 target = {c: 0.0 for c in coins}
                 trades = plan_trades(target, cur_w, band=0.0)
             else:
                 signals = {c: int(SG[t, i]) if math.isfinite(C[t, i]) else 0 for i, c in enumerate(coins)}
                 vols = {c: float(V[t, i]) for i, c in enumerate(coins)}
-                target = target_weights(signals, vols, self.target_vol, self.max_w, self.max_gross,
-                                        r["size_mult"])
+                if self.sizing == "legacy":
+                    target = target_weights_legacy(signals, vols, self.target_vol, self.max_w,
+                                                   self.max_gross, r["size_mult"])
+                    cov = cov_matrix(LR[max(0, t - self.vol_lb + 1):t + 1], self.bpy)
+                else:
+                    cov = cov_matrix(LR[max(0, t - self.vol_lb + 1):t + 1], self.bpy)
+                    target = target_weights(signals, vols, cov, self.target_vol, self.max_w,
+                                            self.max_gross, r["size_mult"])
+                exante = ex_ante_vol(target, cov)
                 trades = plan_trades(target, cur_w, self.band)
             pending = trades or None
             gross = sum(abs(x) for x in cur_w.values())
-            rows.append((ts[t], equity, gross, r["reason"], len(trades), book.fees, book.trades))
+            rows.append((ts[t], equity, gross, r["reason"], len(trades), book.fees, book.trades, exante, r["size_mult"]))
         out = pd.DataFrame(rows, columns=["ts", "equity", "gross", "risk", "n_trades_planned",
-                                          "fees_cum", "trades_cum"])
+                                          "fees_cum", "trades_cum", "exante_vol", "size_mult"])
         out["time"] = pd.to_datetime(out["ts"], unit="ms", utc=True)
         out["close_time"] = out["time"] + pd.Timedelta(hours=4)
         return out.set_index("close_time")

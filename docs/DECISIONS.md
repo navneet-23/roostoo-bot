@@ -46,3 +46,21 @@ Choices made where the brief left room, in the order they came up.
     (mean gross 15% in the backtest). This is the design as specified and was left alone.
 12. **Dry run without keys is a paper account.** `MODE=dry_run` with no key uses a flat
     $100k wallet so the full pipeline can be exercised against the public endpoints.
+13. **2026-10-06, sizing bug fixed before deployment.** The per-coin formula
+    `signal * (target_vol / n) / vol` ran the book at ~15% gross and ~10% realised vol against a
+    declared 25% target. Sizing is now portfolio-level: `raw = signal / vol` scaled so that
+    `sqrt(w' Sigma w) = 25%` with Sigma the 30-day covariance of 4h returns, caps applied after
+    (no re-levering when a cap binds), identical code in backtest and live bot. This is a
+    correction to the declared design, not tuning: the 25% target predates every backtest and
+    nothing was chosen from results. Signals, EMA 100, universe, caps, band and the drawdown
+    stop are untouched. Before/after numbers are in `docs/CHANGELOG.md`; the original report is
+    kept as `backtest/RESULTS_2026-10-06_legacy_sizing.md`.
+14. **Covariance estimate is listwise over the trailing 180 bars.** Rows where any coin has a
+    missing return are dropped so every pair is estimated on the same bars; if an active coin
+    still has no covariance the sizing falls back to the diagonal (uncorrelated) matrix, which
+    is the conservative direction for a vol target. The backtest and the live bot call the same
+    `cov_matrix` function on the same window.
+15. **The half-size rule dominates realised vol, and was left alone.** After a stop the book
+    runs at half size until a new all-time peak; in the backtest that is 95% of active bars, so
+    realised vol is ~20% rather than 25% even though the full-size target is hit. The rule is
+    part of the specified design and the brief said not to change it.

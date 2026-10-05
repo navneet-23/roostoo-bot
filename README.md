@@ -27,7 +27,7 @@ bot/main.py                 loop: one cycle ~1 min after each 4h close UTC, hear
   bot/execution/state.py           state/state.json, written atomically
 bot/config/settings.py      every parameter, fixed
 backtest/                   simulator with the same strategy code; RESULTS.md
-tests/                      30 unit tests (signing vector from the docs included)
+tests/                      37 unit tests (signing vector from the docs included)
 logs/                       bot.log (rotating), orders.csv, cycles.csv, heartbeat.csv
 ```
 
@@ -47,10 +47,14 @@ return > 0; short when close < EMA(100) and the 14-day return < 0; flat otherwis
 position is exited when its signal turns flat and reversed when it flips. EMA(100) was
 chosen over EMA(50) in the backtest; those two were the only pre-declared variants.
 
-**Sizing.** `weight = signal * (25% / 8) / realised_vol`, with realised vol the annualised
-30-day standard deviation of 4h returns (2190 bars per year). Each coin is capped at 25% of
-equity and gross exposure (longs plus short collateral) at 95%. No leverage. A short weight
-means collateral of that fraction of equity at 1x.
+**Sizing (portfolio vol targeting).** `raw_i = signal_i / realised_vol_i`, with realised vol
+the annualised 30-day standard deviation of 4h returns (2190 bars per year). The raw vector
+is scaled so that the ex-ante portfolio vol `sqrt(w' Sigma w)` is 25%, where Sigma is the
+annualised 30-day covariance matrix of 4h returns. Then the caps: each coin at most 25% of
+equity, gross exposure (longs plus short collateral) at most 95%; if a cap binds the book
+runs below target, it is never re-levered. No leverage. A short weight means collateral of
+that fraction of equity at 1x. All signals zero means cash. (Until 2026-10-06 the code used a
+per-coin formula that ran far below the declared target; see `docs/CHANGELOG.md`.)
 
 **Rebalancing.** At every 4h close, a coin is traded only if its target weight differs from
 its current weight by more than 3% of equity. Market orders for spot, `/v6/short_open` and
@@ -67,25 +71,29 @@ its current weight by more than 3% of equity. Market orders for spot, `/v6/short
 
 ## Backtest summary (2022-01 to 2026-10, 4h bars, 0.1% fee + 0.05% slippage)
 
-| Run | 14-day windows | Median window return | Positive | Median composite | Max DD |
-|---|---|---|---|---|---|
-| EMA 100 (chosen), 2022-2025 | 105 | +0.00% | 48% | 0.00 | -12.2% |
-| EMA 50, 2022-2025 | 105 | -0.02% | 44% | -0.18 | -13.4% |
-| BTC buy-and-hold, 2022-2025 | 105 | +0.45% | 54% | 0.49 | -67.2% |
-| EMA 100, 2026 holdout | 19 | -0.16% | 42% | -0.87 | -6.4% |
+| Run (EMA 100) | 14-day windows | Median window return | Positive | Median composite | Max DD | Mean gross | Realised vol |
+|---|---|---|---|---|---|---|---|
+| Fixed sizing, 2022-2025 | 105 | +0.02% | 51% | 0.08 | -29.2% | 37% | 20.5% |
+| Old sizing, 2022-2025 | 105 | +0.00% | 48% | 0.00 | -12.2% | 15% | 9.9% |
+| BTC buy-and-hold, 2022-2025 | 105 | +0.45% | 54% | 0.49 | -67.2% | 100% | 50.3% |
+| Fixed sizing, 2026 holdout | 19 | -0.39% | 47% | -0.67 | -15.1% | 36% | 15.5% |
+| BTC buy-and-hold, 2026 holdout | 19 | +1.13% | 58% | 1.13 | -40.0% | 100% | 42.0% |
 
 Composite = 0.4 Sortino + 0.3 Sharpe + 0.3 Calmar on daily equity within each window. The
 honest reading, in full in `backtest/RESULTS.md`: the strategy does not beat holding BTC on
-the ranking metric in a typical window; it trades with a mean gross exposure of only 15% of
-equity and a far smaller drawdown. The design was fixed before the backtest and nothing was
-tuned after seeing it.
+the ranking metric in a typical window, with a smaller drawdown. The full-size target book
+is at 25% ex-ante vol in 77% of active bars; realised vol is nearer 20% because the
+drawdown rule keeps the book at half size for most of the period. The universe is today's
+top 8 by volume, which flatters the backtest (look-ahead) but not the live bot. EMA 100 was
+chosen under the old sizing (`backtest/RESULTS_2026-10-06_legacy_sizing.md`); the design was
+fixed before any backtest and nothing was tuned after seeing results.
 
 ## How to run
 
 ```bash
 pip install -r requirements.txt
 cp .env.example .env                 # fill in ROOSTOO_API_KEY, ROOSTOO_SECRET_KEY, MODE
-python -m pytest -q tests            # 30 tests
+python -m pytest -q tests            # 37 tests
 python -m backtest.run_backtest      # regenerates backtest/RESULTS.md (needs ../hk/cache or downloads)
 MODE=dry_run python -m bot.main      # computes and logs target trades, sends nothing
 MODE=live    python -m bot.main      # trades
