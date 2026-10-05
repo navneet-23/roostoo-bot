@@ -2,11 +2,12 @@
 
 - Spot longs: MARKET orders; quantity rounded down to AmountPrecision; orders whose notional is
   below MiniOrder (USD) are skipped.
-- Shorts: /v6/short_open sized by USD collateral (2 decimals, min $1); reduced or closed with
-  /v6/short_close by quantity, or fully with no quantity.
+- Shorts: /v6/short_open sized by USD collateral (2 decimals, min $1); reduced with
+  /v6/short_close by quantity, or closed fully with no quantity.
 - A long and a short on the same coin never coexist: a flip closes first, then opens.
-- Reductions and closes are sent before increases and opens so freed cash funds the buys, and
-  buys never exceed the free USD actually available.
+- Two passes per cycle: every close and reduction first, then every open and increase, so the
+  cash freed by the first pass funds the second. A buy or short open never exceeds the free
+  USD actually available (tracked through the cycle from the API-reported balance).
 - MODE=dry_run logs what would be sent and sends nothing.
 """
 import json
@@ -36,21 +37,22 @@ class Executor:
         self.live = live
         self.order_log = order_log     # CsvLogger
         self.fee = fee
+        self.usd_free = 0.0
 
-    # --- single legs ------------------------------------------------------------------------
+    # --- one leg ------------------------------------------------------------------------------
     def _send(self, kind, pair, reason, **kw):
         """Send one leg (or log it in dry run). Returns the API response dict or None."""
         rec = {"timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "pair": pair,
                "side": kind, "type": "MARKET", "price": "", "quantity": kw.get("quantity", ""),
-               "collateral": kw.get("collateral", ""), "order_id": "", "mode": "live" if self.live else "dry_run",
-               "reason": reason, "response": ""}
+               "collateral": kw.get("collateral", ""), "order_id": "",
+               "mode": "live" if self.live else "dry_run", "reason": reason, "response": ""}
         if not self.live:
             rec["response"] = "DRY_RUN"
             self.order_log.write(rec)
-            log.info("dry_run %s %s %s", kind, pair, {k: v for k, v in kw.items()})
+            log.info("dry_run %s %s %s", kind, pair, kw)
             return None
         try:
-            if kind == "BUY" or kind == "SELL":
+            if kind in ("BUY", "SELL"):
                 resp = self.client.place_order(pair, kind, kw["quantity"])
                 od = resp.get("OrderDetail", {})
                 rec["order_id"] = od.get("OrderID", "")
@@ -77,16 +79,49 @@ class Executor:
         finally:
             self.order_log.write(rec)
 
-    # --- weight changes -------------------------------------------------------------------
+    # --- legs by intent ---------------------------------------------------------------------
+    def _sell_long(self, pair, qty, px, prec, mini, reason, results):
+        q = floor_qty(qty, prec)
+        if float(q) > 0 and float(q) * px >= mini:
+            results.append(self._send("SELL", pair, reason, quantity=q))
+            self.usd_free += float(q) * px * (1 - self.fee)
+
+    def _close_short(self, pair, snap, qty, px, prec, mini, reason, results):
+        held = snap.shorts.get(pair, {}).get("qty", 0.0)
+        if held <= 0:
+            return
+        if qty is None or (held - qty) * px < mini:          # close everything, leave no dust
+            results.append(self._send("SHORT_CLOSE", pair, reason + " close short"))
+            self.usd_free += snap.shorts[pair]["value"] * (1 - self.fee)
+            return
+        q = floor_qty(qty, prec)
+        if float(q) > 0:
+            results.append(self._send("SHORT_CLOSE", pair, reason, quantity=q))
+            self.usd_free += float(q) * px * (1 - self.fee)
+
+    def _buy(self, pair, notional, px, prec, mini, reason, results):
+        spend = min(notional, max(self.usd_free - 1.0, 0.0) / (1 + self.fee))
+        q = floor_qty(spend / px, prec)
+        if float(q) > 0 and float(q) * px >= mini:
+            results.append(self._send("BUY", pair, reason, quantity=q))
+            self.usd_free -= float(q) * px * (1 + self.fee)
+
+    def _open_short(self, pair, collateral, mini, reason, results):
+        coll = min(collateral, max(self.usd_free - 1.0, 0.0) / (1 + self.fee))
+        if coll >= max(mini, 1.0):
+            results.append(self._send("SHORT_OPEN", pair, reason, collateral=fmt_usd(coll)))
+            self.usd_free -= coll * (1 + self.fee)
+
+    # --- weight changes ---------------------------------------------------------------------
     def execute(self, trades: list, snap, reason_by_pair: dict = None) -> list:
         """trades: [{"coin": pair, "from": w, "to": w}], weights as fractions of equity."""
         reason_by_pair = reason_by_pair or {}
-        results = []
-        usd_free = snap.usd_free
-        # closes and reductions first, then opens and increases
-        order = sorted(trades, key=lambda t: 0 if abs(t["to"]) < abs(t["from"]) or t["from"] * t["to"] < 0 else 1)
-        for tr in order:
-            pair, w_from, w_to = tr["coin"], tr["from"], tr["to"]
+        results, opens = [], []
+        self.usd_free = snap.usd_free
+        equity = snap.equity
+        # pass 1: closes and reductions
+        for tr in trades:
+            pair, w_from, w_to = tr["coin"], float(tr["from"]), float(tr["to"])
             meta = self.meta.get(pair)
             px = snap.prices.get(pair, 0.0)
             if not meta or not meta.get("CanTrade", True) or px <= 0:
@@ -95,58 +130,31 @@ class Executor:
             prec, mini = int(meta.get("AmountPrecision", 0)), float(meta.get("MiniOrder", 1) or 1)
             coin = pair.split("/")[0]
             reason = reason_by_pair.get(pair, "")
-            equity = snap.equity
             held_long = snap.coins.get(coin, 0.0)
-            held_short = snap.shorts.get(pair, {}).get("qty", 0.0)
-
-            # 1. flips: close the old side completely
-            if w_from > 0 and w_to <= 0 and held_long > 0:
-                q = floor_qty(held_long, prec)
-                if float(q) * px >= mini:
-                    r = self._send("SELL", pair, reason + " close long", quantity=q)
-                    results.append(r)
-                    usd_free += float(q) * px * (1 - self.fee)
+            if w_from > 0 and w_to <= 0:                      # leave the long side entirely
+                self._sell_long(pair, held_long, px, prec, mini, reason + " close long", results)
                 w_from = 0.0
-            elif w_from < 0 and w_to >= 0 and held_short > 0:
-                r = self._send("SHORT_CLOSE", pair, reason + " close short")
-                results.append(r)
-                usd_free += snap.shorts[pair]["value"] * (1 - self.fee)
+            elif w_from < 0 and w_to >= 0:                    # leave the short side entirely
+                self._close_short(pair, snap, None, px, prec, mini, reason, results)
                 w_from = 0.0
-
             delta = w_to - w_from
             notional = abs(delta) * equity
             if notional < mini:
                 continue
-            # 2. adjust within the same side
+            if w_to > 0 and delta < 0:                        # reduce a long
+                q = min(notional / px, held_long)
+                if (held_long - q) * px < mini:
+                    q = held_long
+                self._sell_long(pair, q, px, prec, mini, reason, results)
+            elif w_to < 0 and delta > 0:                      # reduce a short
+                self._close_short(pair, snap, notional / px, px, prec, mini, reason, results)
+            else:                                             # open or increase: pass 2
+                opens.append((pair, w_to, delta, px, prec, mini, reason))
+        # pass 2: opens and increases, funded by what pass 1 freed
+        for pair, w_to, delta, px, prec, mini, reason in opens:
+            notional = abs(delta) * equity
             if w_to > 0:
-                if delta > 0:
-                    spend = min(notional, max(usd_free - 1.0, 0.0) / (1 + self.fee))
-                    q = floor_qty(spend / px, prec)
-                    if float(q) > 0 and float(q) * px >= mini:
-                        results.append(self._send("BUY", pair, reason, quantity=q))
-                        usd_free -= float(q) * px * (1 + self.fee)
-                else:
-                    q_f = min(notional / px, held_long)
-                    if (held_long - q_f) * px < mini:      # do not leave dust
-                        q_f = held_long
-                    q = floor_qty(q_f, prec)
-                    if float(q) > 0 and float(q) * px >= mini:
-                        results.append(self._send("SELL", pair, reason, quantity=q))
-                        usd_free += float(q) * px * (1 - self.fee)
-            elif w_to < 0:
-                if delta < 0:
-                    coll = min(notional, max(usd_free - 1.0, 0.0) / (1 + self.fee))
-                    if coll >= max(mini, 1.0):
-                        results.append(self._send("SHORT_OPEN", pair, reason, collateral=fmt_usd(coll)))
-                        usd_free -= coll * (1 + self.fee)
-                else:
-                    q_f = min(notional / px, held_short)
-                    if (held_short - q_f) * px < mini:
-                        results.append(self._send("SHORT_CLOSE", pair, reason + " close short"))
-                        usd_free += snap.shorts[pair]["value"] * (1 - self.fee)
-                    else:
-                        q = floor_qty(q_f, prec)
-                        if float(q) > 0:
-                            results.append(self._send("SHORT_CLOSE", pair, reason, quantity=q))
-                            usd_free += float(q) * px * (1 - self.fee)
+                self._buy(pair, notional, px, prec, mini, reason, results)
+            else:
+                self._open_short(pair, notional, mini, reason, results)
         return results
