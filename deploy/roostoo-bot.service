@@ -1,0 +1,18 @@
+[Unit]
+Description=Roostoo hackathon trading bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ec2-user
+WorkingDirectory=/home/ec2-user/roostoo-bot
+EnvironmentFile=/home/ec2-user/roostoo-bot/.env
+ExecStart=/home/ec2-user/roostoo-bot/.venv/bin/python -m bot.main
+Restart=always
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

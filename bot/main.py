@@ -139,7 +139,7 @@ class Bot:
             "price_source": source, "collateral_in_lock": snap.collateral_in_lock,
             "rate_limit_used": self.limiter.used(), "note": note})
         log.info("cycle %s equity %.2f gross %.3f risk=%s trades=%d sent=%d %s", bar_open, snap.equity,
-                 snap.gross, r["reason"], len(trades), len(sent), note)
+                 snap.gross, r["reason"], len(trades), sum(1 for x in sent if x is not None), note)
 
     def heartbeat(self, next_cycle_ms: int):
         snap = self.snapshot()
