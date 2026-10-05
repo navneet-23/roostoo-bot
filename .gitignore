@@ -1,0 +1,16 @@
+# secrets
+.env
+# runtime artefacts
+logs/*
+!logs/.gitkeep
+state/*
+!state/.gitkeep
+backtest/data/
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+# data
+*.parquet
