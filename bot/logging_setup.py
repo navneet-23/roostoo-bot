@@ -39,7 +39,7 @@ class CsvLogger:
 ORDER_FIELDS = ["timestamp", "pair", "side", "type", "price", "quantity", "collateral", "order_id",
                 "mode", "reason", "response"]
 CYCLE_FIELDS = ["timestamp", "bar_open_utc", "mode", "equity", "usd_free", "usd_lock", "gross",
-                "risk_reason", "size_mult", "peak", "ref_peak", "cooldown_until", "signals",
+                "risk_reason", "size_mult", "peak", "ref_peak", "cooldown_until", "half_until", "signals",
                 "target_weights", "current_weights", "trades_planned", "orders_sent", "price_source",
                 "collateral_in_lock", "rate_limit_used", "note"]
 HEARTBEAT_FIELDS = ["timestamp", "mode", "equity", "usd_free", "gross", "n_longs", "n_shorts",

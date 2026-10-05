@@ -44,12 +44,16 @@ VOL_LOOKBACK = 30 * BARS_PER_DAY     # 30-day realised vol, in bars
 TARGET_VOL = 0.25         # annualised portfolio target volatility
 MAX_WEIGHT = 0.25         # per-coin cap, fraction of equity
 MAX_GROSS = 0.95          # longs + short collateral, fraction of equity
-NO_TRADE_BAND = 0.03      # skip a trade if |target - current| <= 3% of equity
+NO_TRADE_BAND = 0.03      # skip a trade if |target - current| <= 3% of equity ...
+REL_BAND = 0.30           # ... or <= 30% of |target|, unless the coin's signal changed
+TURNOVER_RULE = "signal"  # "signal" (current) or "legacy" (3% band only); see docs/CHANGELOG.md
 
 # --- Drawdown stop ---------------------------------------------------------------------------
 DD_STOP = 0.08            # close everything when equity is 8% below its running peak
 COOLDOWN_SEC = 24 * 3600  # stay flat this long after a stop
-REDUCED_SIZE = 0.5        # size multiplier after the cooldown until a new equity peak
+REDUCED_SIZE = 0.5        # size multiplier after the cooldown ...
+HALF_SIZE_SEC = 72 * 3600 # ... for this long, then full size; the peak resets at re-entry
+REENTRY = "timed"         # "timed" (current) or "legacy" (half size until a new all-time peak)
 
 # --- Costs (used by the backtest and for logging) ---------------------------------------------
 FEE_TAKER = 0.001

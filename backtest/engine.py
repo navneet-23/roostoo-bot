@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 
 from bot.strategy.rebalance import plan_trades
-from bot.strategy.risk import DrawdownController, RiskState
+from bot.strategy.risk import DrawdownController, DrawdownControllerLegacy, RiskState
 from bot.strategy.signals import cov_matrix, log_returns, realized_vol, trend_signal
 from bot.strategy.sizing import ex_ante_vol, target_weights, target_weights_legacy
 
@@ -40,6 +40,7 @@ class Book:
     shorts: dict = field(default_factory=dict)   # coin -> Short
     fees: float = 0.0
     trades: int = 0
+    traded: float = 0.0                          # cumulative traded notional
 
     def equity(self, price: dict):
         e = self.cash
@@ -61,10 +62,15 @@ class Book:
 class Simulator:
     def __init__(self, fee, slippage, ema_n, ret_lookback, vol_lookback, bars_per_year,
                  target_vol, max_weight, max_gross, band, dd_stop, cooldown_sec, reduced_size,
-                 capital=100_000.0, sizing="cov"):
+                 capital=100_000.0, sizing="cov", turnover_rule="signal", rel_band=0.30,
+                 reentry="timed", half_size_sec=72 * 3600):
         """sizing: "cov" = portfolio vol targeting (current); "legacy" = per-coin formula used
-        until 2026-10-06, kept for the before/after comparison in RESULTS.md."""
-        self.sizing = sizing
+        until 2026-10-06. turnover_rule: "signal" = trade on a signal change or a move beyond
+        max(band, rel_band*|target|) (current); "legacy" = 3% band only. reentry: "timed" =
+        24h flat, half size for half_size_sec, peak reset (current); "legacy" = half size until
+        a new all-time peak. The legacy options exist for the A/B comparisons in RESULTS.md."""
+        self.sizing, self.turnover_rule, self.rel_band = sizing, turnover_rule, rel_band
+        self.reentry, self.half_size_sec = reentry, half_size_sec
         self.fee, self.slip = fee, slippage
         self.ema_n, self.ret_lb, self.vol_lb, self.bpy = ema_n, ret_lookback, vol_lookback, bars_per_year
         self.target_vol, self.max_w, self.max_gross, self.band = target_vol, max_weight, max_gross, band
@@ -82,6 +88,7 @@ class Simulator:
         book.cash -= notional + fee
         book.fees += fee
         book.trades += 1
+        book.traded += notional
         book.longs[coin] = book.longs.get(coin, 0.0) + qty
 
     def _sell(self, book, coin, qty, px):
@@ -94,6 +101,7 @@ class Simulator:
         book.cash += notional - fee
         book.fees += fee
         book.trades += 1
+        book.traded += notional
         rem = book.longs[coin] - qty
         if rem * p < 1e-6:
             del book.longs[coin]
@@ -110,6 +118,7 @@ class Simulator:
         book.cash -= collateral + fee
         book.fees += fee
         book.trades += 1
+        book.traded += collateral
         s = book.shorts.get(coin)
         if s is None:
             book.shorts[coin] = Short(qty, p, collateral)
@@ -135,6 +144,7 @@ class Simulator:
         book.cash += collateral_back + pnl - fee
         book.fees += fee
         book.trades += 1
+        book.traded += qty * p
         if qty >= s.qty:
             del book.shorts[coin]
         else:
@@ -174,8 +184,12 @@ class Simulator:
         idx = cls.index
         t0 = int(np.searchsorted(idx.values, np.datetime64(start.tz_convert("UTC").tz_localize(None))))
         book = Book(cash=self.capital)
-        risk = DrawdownController(RiskState(), *self.risk_params)
+        if self.reentry == "legacy":
+            risk = DrawdownControllerLegacy(RiskState(), *self.risk_params)
+        else:
+            risk = DrawdownController(RiskState(), *self.risk_params, half_size_sec=self.half_size_sec)
         rows = []
+        prev_signals = None
         pending = None                                  # trades decided at t, filled at open t+1
         C, O, SG, V = cls.values, opn.values, sig.values, vol.values
         ts = idx.as_unit("ms").asi8                      # bar open time in ms, whatever the index resolution
@@ -209,12 +223,18 @@ class Simulator:
                     target = target_weights(signals, vols, cov, self.target_vol, self.max_w,
                                             self.max_gross, r["size_mult"])
                 exante = ex_ante_vol(target, cov)
-                trades = plan_trades(target, cur_w, self.band)
+                if self.turnover_rule == "legacy":
+                    trades = plan_trades(target, cur_w, self.band)
+                else:
+                    trades = plan_trades(target, cur_w, self.band, signals, prev_signals, self.rel_band)
+                prev_signals = signals
             pending = trades or None
             gross = sum(abs(x) for x in cur_w.values())
-            rows.append((ts[t], equity, gross, r["reason"], len(trades), book.fees, book.trades, exante, r["size_mult"]))
+            rows.append((ts[t], equity, gross, r["reason"], len(trades), book.fees, book.trades, exante,
+                         r["size_mult"], book.traded))
         out = pd.DataFrame(rows, columns=["ts", "equity", "gross", "risk", "n_trades_planned",
-                                          "fees_cum", "trades_cum", "exante_vol", "size_mult"])
+                                          "fees_cum", "trades_cum", "exante_vol", "size_mult", "traded_cum"])
+        out["equity_gross"] = out["equity"] + out["fees_cum"]       # net equity with fees added back
         out["time"] = pd.to_datetime(out["ts"], unit="ms", utc=True)
         out["close_time"] = out["time"] + pd.Timedelta(hours=4)
         return out.set_index("close_time")

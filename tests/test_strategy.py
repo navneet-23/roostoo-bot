@@ -3,7 +3,7 @@ import pandas as pd
 import pytest
 
 from bot.strategy.rebalance import plan_trades
-from bot.strategy.risk import DrawdownController, RiskState
+from bot.strategy.risk import DrawdownControllerLegacy as DrawdownController, RiskState
 from bot.strategy.signals import realized_vol, trend_signal
 from bot.strategy.sizing import target_weights_legacy
 
@@ -66,7 +66,7 @@ def test_plan_trades_band():
     assert [x["coin"] for x in out] == ["B", "C"]
 
 
-def test_drawdown_controller_cycle():
+def test_legacy_drawdown_controller_cycle():
     rc = DrawdownController(RiskState(), dd_stop=0.08, cooldown_sec=24 * 3600, reduced_size=0.5)
     assert rc.update(100_000, 0)["reason"] == "normal"
     assert rc.update(105_000, 1)["reason"] == "normal"         # new peak

@@ -14,6 +14,7 @@ class BotState:
         self.risk = RiskState()
         self.last_bar_ts = 0            # ms open time of the last bar acted on
         self.collateral_in_lock = None  # None = not yet observed; see docs/DECISIONS.md
+        self.prev_signals = None        # pair -> signal at the last processed cycle (turnover rule)
         self.load()
 
     def load(self):
@@ -24,11 +25,12 @@ class BotState:
         self.risk = RiskState.from_dict(d.get("risk", {}))
         self.last_bar_ts = int(d.get("last_bar_ts", 0))
         self.collateral_in_lock = d.get("collateral_in_lock")
+        self.prev_signals = d.get("prev_signals")
 
     def save(self):
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         d = {"risk": self.risk.to_dict(), "last_bar_ts": self.last_bar_ts,
-             "collateral_in_lock": self.collateral_in_lock,
+             "collateral_in_lock": self.collateral_in_lock, "prev_signals": self.prev_signals,
              "updated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
         tmp = self.path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:

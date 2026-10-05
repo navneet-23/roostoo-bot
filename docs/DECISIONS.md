@@ -64,3 +64,21 @@ Choices made where the brief left room, in the order they came up.
     runs at half size until a new all-time peak; in the backtest that is 95% of active bars, so
     realised vol is ~20% rather than 25% even though the full-size target is hit. The rule is
     part of the specified design and the brief said not to change it.
+16. **2026-10-06, final pre-deployment change set.** Two mechanical rules changed, documented
+    with before/after numbers in `docs/CHANGELOG.md`. (1) Turnover: a coin is traded only on
+    a signal change or when |current - target| > max(3% of equity, 30% of |target|), so the
+    book is no longer resized every 4h on covariance noise. (2) Re-entry after a stop: 24h flat,
+    72h at half size, then full size, with the running peak reset at re-entry, so one stop can
+    no longer leave the bot at half size for good. Signals, EMA 100, universe, vol target, caps
+    and the 8% stop level are unchanged. The decision rule (keep B if its 2022-2025 median
+    composite >= A's) was declared before the backtest was run; B won 0.11 to 0.08 and is live.
+17. **The previous rules are kept in code as `legacy` options** (`TURNOVER_RULE`, `REENTRY` in
+    settings; `DrawdownControllerLegacy`, `plan_trades` without signals) so the A/B comparison
+    in RESULTS.md is reproducible from the same code, and so that reverting would be a one-line
+    config commit.
+18. **First cycle after a deploy or a state loss trades to target.** The turnover rule needs
+    the previous cycle's signals; they are persisted in `state/state.json`. With none stored,
+    every coin counts as "signal changed" and is traded to its target, which is the right
+    behaviour for a fresh account.
+19. **The 2026 holdout is no longer clean** and is labelled as such in RESULTS.md; it has been
+    viewed three times.

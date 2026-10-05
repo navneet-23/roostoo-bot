@@ -56,14 +56,16 @@ runs below target, it is never re-levered. No leverage. A short weight means col
 that fraction of equity at 1x. All signals zero means cash. (Until 2026-10-06 the code used a
 per-coin formula that ran far below the declared target; see `docs/CHANGELOG.md`.)
 
-**Rebalancing.** At every 4h close, a coin is traded only if its target weight differs from
-its current weight by more than 3% of equity. Market orders for spot, `/v6/short_open` and
-`/v6/short_close` for shorts; a flip closes the old side first.
+**Rebalancing.** At every 4h close, a coin is traded only if its signal changed, or its
+target weight differs from its current weight by more than max(3% of equity, 30% of the
+target). Otherwise the position is left alone even if the vol estimates moved. Market orders
+for spot, `/v6/short_open` and `/v6/short_close` for shorts; a flip closes the old side first.
 
 **Risk rules (all coded, all autonomous).**
 - Drawdown stop: if equity falls 8% below its running peak, close everything and stay flat
-  for 24 hours, then resume at half size until equity makes a new peak. Peak, cooldown and
-  size multiplier live in `state/state.json` and survive restarts.
+  for 24 hours, then trade at half size for 72 hours, then return to full size. The running
+  peak is reset to the equity at re-entry. Peak, cooldown, half-size period and the previous
+  signals live in `state/state.json` and survive restarts.
 - Orders never exceed the free USD reported by the exchange; quantities are rounded down to
   the pair's precision and orders below the minimum size are skipped.
 - If price data is unavailable the bot holds its positions and logs why.
@@ -71,22 +73,22 @@ its current weight by more than 3% of equity. Market orders for spot, `/v6/short
 
 ## Backtest summary (2022-01 to 2026-10, 4h bars, 0.1% fee + 0.05% slippage)
 
-| Run (EMA 100) | 14-day windows | Median window return | Positive | Median composite | Max DD | Mean gross | Realised vol |
-|---|---|---|---|---|---|---|---|
-| Fixed sizing, 2022-2025 | 105 | +0.02% | 51% | 0.08 | -29.2% | 37% | 20.5% |
-| Old sizing, 2022-2025 | 105 | +0.00% | 48% | 0.00 | -12.2% | 15% | 9.9% |
-| BTC buy-and-hold, 2022-2025 | 105 | +0.45% | 54% | 0.49 | -67.2% | 100% | 50.3% |
-| Fixed sizing, 2026 holdout | 19 | -0.39% | 47% | -0.67 | -15.1% | 36% | 15.5% |
-| BTC buy-and-hold, 2026 holdout | 19 | +1.13% | 58% | 1.13 | -40.0% | 100% | 42.0% |
+| Run (EMA 100, vol-targeted sizing) | 14-day windows | Median ret net | Median ret gross of fees | Positive | Median composite | Max DD | Mean gross | Realised vol | Trades | Fees |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Live rules (B), 2022-2025 | 105 | +0.01% | +0.49% | 50% | 0.11 | -37.2% | 61% | 31.7% | 9764 | $107,563 |
+| Previous rules (A, d214693), 2022-2025 | 105 | +0.02% | +0.20% | 51% | 0.08 | -29.2% | 37% | 20.5% | 7548 | $58,504 |
+| BTC buy-and-hold, 2022-2025 | 105 | +0.45% | +0.45% | 54% | 0.49 | -67.2% | 100% | 50.3% | 0 | $0 |
+| Live rules (B), 2026 | 19 | -0.51% | +0.28% | 42% | -0.52 | -23.1% | 60% | 24.5% | 1863 | $22,115 |
+| BTC buy-and-hold, 2026 | 19 | +1.13% | +1.13% | 58% | 1.13 | -40.0% | 100% | 42.0% | 0 | $0 |
 
 Composite = 0.4 Sortino + 0.3 Sharpe + 0.3 Calmar on daily equity within each window. The
-honest reading, in full in `backtest/RESULTS.md`: the strategy does not beat holding BTC on
-the ranking metric in a typical window, with a smaller drawdown. The full-size target book
-is at 25% ex-ante vol in 77% of active bars; realised vol is nearer 20% because the
-drawdown rule keeps the book at half size for most of the period. The universe is today's
-top 8 by volume, which flatters the backtest (look-ahead) but not the live bot. EMA 100 was
-chosen under the old sizing (`backtest/RESULTS_2026-10-06_legacy_sizing.md`); the design was
-fixed before any backtest and nothing was tuned after seeing results.
+honest reading, in full in `backtest/RESULTS.md` and `docs/CHANGELOG.md`: the strategy does
+not beat holding BTC on the ranking metric in a typical window, with a smaller maximum
+drawdown. Fees cost about 0.3 to 0.5 percentage points per 14-day window. The live rules
+were kept by a pre-declared decision rule (B's 2022-2025 median composite 0.11 vs A's 0.08),
+a difference inside the metric's noise. The 2026 column is not a clean holdout any more.
+The universe is today's top 8 by volume, which flatters the backtest (look-ahead) but not the
+live bot. Earlier reports are kept as `backtest/RESULTS_2026-10-06_*.md`.
 
 ## How to run
 

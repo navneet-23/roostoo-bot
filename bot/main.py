@@ -23,7 +23,7 @@ from bot.execution.roostoo_client import RoostooClient
 from bot.execution.state import BotState
 from bot.logging_setup import CYCLE_FIELDS, HEARTBEAT_FIELDS, ORDER_FIELDS, CsvLogger, setup_logging
 from bot.strategy.rebalance import plan_trades
-from bot.strategy.risk import DrawdownController
+from bot.strategy.risk import DrawdownController, DrawdownControllerLegacy
 from bot.strategy.signals import cov_matrix, log_returns, realized_vol, trend_signal
 from bot.strategy.sizing import ex_ante_vol, target_weights
 
@@ -99,7 +99,10 @@ class Bot:
         ticker = self.client.ticker()
         self.store.record(bar_open_ms + S.BAR_MS, ticker)
         snap = self.snapshot(ticker)
-        risk = DrawdownController(self.state.risk, S.DD_STOP, S.COOLDOWN_SEC, S.REDUCED_SIZE)
+        if S.REENTRY == "legacy":
+            risk = DrawdownControllerLegacy(self.state.risk, S.DD_STOP, S.COOLDOWN_SEC, S.REDUCED_SIZE)
+        else:
+            risk = DrawdownController(self.state.risk, S.DD_STOP, S.COOLDOWN_SEC, S.REDUCED_SIZE, S.HALF_SIZE_SEC)
         r = risk.update(snap.equity, now)
 
         panel, source = self.prices()
@@ -119,7 +122,12 @@ class Bot:
             vols = {p: float(vol[p]) for p in S.UNIVERSE}
             cov = cov_matrix(log_returns(panel[list(S.UNIVERSE)]).values[-S.VOL_LOOKBACK:], S.BARS_PER_YEAR)
             target = target_weights(signals, vols, cov, S.TARGET_VOL, S.MAX_WEIGHT, S.MAX_GROSS, r["size_mult"])
-            trades = plan_trades(target, snap.weights, S.NO_TRADE_BAND)
+            if S.TURNOVER_RULE == "legacy":
+                trades = plan_trades(target, snap.weights, S.NO_TRADE_BAND)
+            else:
+                trades = plan_trades(target, snap.weights, S.NO_TRADE_BAND, signals,
+                                     self.state.prev_signals, S.REL_BAND)
+            self.state.prev_signals = dict(signals)
             note = f"ex-ante vol {ex_ante_vol(target, cov):.3f}"
             if panel.index[-1] != bar_open:
                 note += f"; latest bar in panel is {panel.index[-1]} (expected {bar_open})"
@@ -134,7 +142,8 @@ class Bot:
             "equity": f"{snap.equity:.2f}", "usd_free": f"{snap.usd_free:.2f}", "usd_lock": f"{snap.usd_lock:.2f}",
             "gross": f"{snap.gross:.4f}", "risk_reason": r["reason"], "size_mult": r["size_mult"],
             "peak": f"{self.state.risk.peak:.2f}", "ref_peak": f"{self.state.risk.ref_peak:.2f}",
-            "cooldown_until": self.state.risk.cooldown_until, "signals": json.dumps(signals),
+            "cooldown_until": self.state.risk.cooldown_until, "half_until": self.state.risk.half_until,
+            "signals": json.dumps(signals),
             "target_weights": json.dumps({k: round(v, 4) for k, v in target.items()}),
             "current_weights": json.dumps({k: round(v, 4) for k, v in snap.weights.items()}),
             "trades_planned": len(trades), "orders_sent": sum(1 for x in sent if x is not None),
